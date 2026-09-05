@@ -6,7 +6,8 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY Gemfile Gemfile.lock .ruby-version ./
-RUN bundle install --without development test
+RUN bundle config set --local without "development test" \
+ && bundle install
 COPY . .
 
 ENV PORT=8080 RAILS_ENV=production
