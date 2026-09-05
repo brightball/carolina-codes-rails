@@ -3,6 +3,7 @@
 require "json"
 require "net/http"
 require "pg"
+require "thread"
 require "uri"
 
 # SQL against PostgreSQL v1_* views only. No Active Record / Ash tables.
@@ -154,31 +155,100 @@ class Catalog
     end
 
     def query(sql, params = [])
-      @sql_count = (@sql_count || 0) + 1
+      lock.synchronize { @sql_count = (@sql_count || 0) + 1 }
       return query_fn.call(sql, params) if query_fn
 
-      conn = connection
-      result = params.empty? ? conn.exec(sql) : conn.exec_params(sql, params)
-      result.map { |row| row }
+      with_connection do |conn|
+        result = params.empty? ? conn.exec(sql) : conn.exec_params(sql, params)
+        result.map { |row| row }
+      end
+    end
+
+    # Sized to Puma's RAILS_MAX_THREADS so Phoenix's parallel
+    # fetch_home speaker+sponsor GETs each get their own PG connection.
+    def pool_size
+      Integer(ENV.fetch("RAILS_MAX_THREADS", 3))
+    end
+
+    def with_connection
+      conn = checkout
+      yield conn
+    rescue PG::ConnectionBad, PG::UnableToSend
+      discard(conn)
+      conn = nil
+      raise
+    ensure
+      checkin(conn) if conn
     end
 
     private
 
-    def connection
-      return @conn if @conn && alive?(@conn)
-      @connect_count = (@connect_count || 0) + 1
-      return connect_fn.call if connect_fn
-
-      url = ENV.fetch("DATABASE_URL", "postgres://postgres:postgres@127.0.0.1:5432/carolina_dev")
-      url += (url.include?("?") ? "&" : "?") + "sslmode=disable" unless url.include?("sslmode=")
-      @conn = PG.connect(url)
+    def lock
+      @lock ||= Mutex.new
     end
 
-    def alive?(conn)
-      conn.exec("SELECT 1")
-      true
-    rescue StandardError
-      false
+    def wait
+      @wait ||= ConditionVariable.new
+    end
+
+    def idle
+      @idle ||= []
+    end
+
+    def checkout
+      if connect_fn
+        lock.synchronize { @connect_count = (@connect_count || 0) + 1 }
+        return connect_fn.call
+      end
+
+      created = false
+      lock.synchronize do
+        loop do
+          return idle.pop unless idle.empty?
+          @opened ||= 0
+          if @opened < pool_size
+            @opened += 1
+            @connect_count = (@connect_count || 0) + 1
+            created = true
+            break
+          end
+          wait.wait(lock)
+        end
+      end
+      begin
+        connect_new
+      rescue StandardError
+        lock.synchronize do
+          @opened = [(@opened || 1) - 1, 0].max
+          wait.signal
+        end
+        raise
+      end
+    end
+
+    def checkin(conn)
+      return if connect_fn
+
+      lock.synchronize do
+        idle << conn
+        wait.signal
+      end
+    end
+
+    def discard(conn)
+      conn.close rescue nil
+      return if connect_fn
+
+      lock.synchronize do
+        @opened = [(@opened || 1) - 1, 0].max
+        wait.signal
+      end
+    end
+
+    def connect_new
+      url = ENV.fetch("DATABASE_URL", "postgres://postgres:postgres@127.0.0.1:5432/carolina_dev")
+      url += (url.include?("?") ? "&" : "?") + "sslmode=disable" unless url.include?("sslmode=")
+      PG.connect(url)
     end
 
     def year_speakers(year)

@@ -64,6 +64,51 @@ class PolyglotApiTest < ActionDispatch::IntegrationTest
     assert Catalog.sql_count.positive?, "year-scoped list hits catalog SQL"
   end
 
+  test "parallel year-scoped speaker and sponsor lists use distinct pooled connections" do
+    ensure_catalog
+    skip "postgres unavailable" if Catalog.query_fn
+
+    errors = []
+    speakers = nil
+    sponsors = nil
+    t1 = Thread.new do
+      speakers = Catalog.speakers(2026)
+    rescue StandardError => e
+      errors << e
+    end
+    t2 = Thread.new do
+      sponsors = Catalog.sponsors(2026)
+    rescue StandardError => e
+      errors << e
+    end
+    t1.join
+    t2.join
+    assert_empty errors.map { |e| "#{e.class}: #{e.message}" }
+    refute_empty speakers
+    assert speakers.first["languages"].is_a?(Array)
+    refute_empty sponsors
+    assert sponsors.first.key?("tier")
+  end
+
+  test "overlapping Catalog.query calls do not share one PG connection" do
+    ensure_catalog
+    skip "postgres unavailable" if Catalog.query_fn
+
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    errors = []
+    threads = Array.new(2) do
+      Thread.new do
+        Catalog.query("SELECT pg_sleep(0.25) AS s")
+      rescue StandardError => e
+        errors << e
+      end
+    end
+    threads.each(&:join)
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+    assert_empty errors.map { |e| "#{e.class}: #{e.message}" }
+    assert_operator elapsed, :<, 0.45, "expected pooled overlapping queries, elapsed=#{elapsed}"
+  end
+
   test "year-scoped sponsors wrap data and include tier" do
     ensure_catalog
     get "/v1/sponsors", params: { year: "2026" }
