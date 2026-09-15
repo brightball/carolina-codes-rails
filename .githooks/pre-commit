@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# In-repo pre-commit entry. Prefer the pre-commit runner so named hooks
+# match .pre-commit-config.yaml; fall back to the same five check commands.
+set -euo pipefail
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+if command -v mise >/dev/null 2>&1; then
+  eval "$(mise activate bash --shims 2>/dev/null)" || true
+fi
+
+if command -v pre-commit >/dev/null 2>&1; then
+  exec pre-commit run --hook-stage pre-commit --all-files
+fi
+
+bin/rails test
+bin/brakeman --quiet --no-pager --exit-on-warn --exit-on-error
+bin/bundler-audit
+if git diff --cached --quiet; then
+  gitleaks git --verbose
+else
+  gitleaks git --pre-commit --staged --verbose
+fi
+bin/rubocop

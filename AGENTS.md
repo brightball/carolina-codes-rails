@@ -1,6 +1,6 @@
 # carolina-codes-rails
 
-Read-only v1 polyglot API. See README.md for install, run, and test commands.
+Read-only v1 polyglot API. See README.md for install, run, and test commands. `bin/ci` / `pre-commit run --all-files` run tests, Brakeman, bundler-audit, gitleaks, and RuboCop.
 
 ## Cursor Cloud specific instructions
 

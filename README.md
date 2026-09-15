@@ -20,3 +20,14 @@ bin/rails server
 ```bash
 bin/rails test
 ```
+
+Quality gates (tests, Brakeman SAST, bundler-audit, gitleaks, RuboCop). Local precommit and Gitea Actions run the same five commands as separate checks:
+
+```bash
+mise install
+pre-commit run --all-files   # or: git config core.hooksPath .githooks
+bin/ci                       # setup + the five checks
+mise run secrets             # gitleaks git --verbose
+```
+
+Emergency skip: `SKIP=rails-test,brakeman,bundler-audit,gitleaks,rubocop git commit`. Gitea runs one parallel job per check in `.gitea/workflows/precommit.yml`.

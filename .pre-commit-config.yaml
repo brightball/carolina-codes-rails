@@ -1,0 +1,37 @@
+# Local pre-commit hooks. Emergency escape:
+# SKIP=rails-test,brakeman,bundler-audit,gitleaks,rubocop git commit
+# Install once: git config core.hooksPath .githooks
+# (or: pre-commit install)
+repos:
+  - repo: local
+    hooks:
+      - id: rails-test
+        name: Rails tests
+        language: system
+        entry: bin/rails test
+        pass_filenames: false
+        always_run: true
+      - id: brakeman
+        name: Brakeman SAST
+        language: system
+        entry: bin/brakeman --quiet --no-pager --exit-on-warn --exit-on-error
+        pass_filenames: false
+        always_run: true
+      - id: bundler-audit
+        name: bundler-audit
+        language: system
+        entry: bin/bundler-audit
+        pass_filenames: false
+        always_run: true
+      - id: gitleaks
+        name: gitleaks
+        language: system
+        entry: bash -c 'if git diff --cached --quiet; then gitleaks git --verbose; else gitleaks git --pre-commit --staged --verbose; fi'
+        pass_filenames: false
+        always_run: true
+      - id: rubocop
+        name: RuboCop
+        language: system
+        entry: bin/rubocop
+        pass_filenames: false
+        always_run: true

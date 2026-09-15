@@ -18,10 +18,10 @@ class Catalog
     { "method" => "GET", "path" => "/", "query" => [] },
     { "method" => "GET", "path" => "/health", "query" => [] },
     { "method" => "GET", "path" => "/v1/years", "query" => [] },
-    { "method" => "GET", "path" => "/v1/speakers", "query" => ["year"] },
+    { "method" => "GET", "path" => "/v1/speakers", "query" => [ "year" ] },
     { "method" => "GET", "path" => "/v1/speakers/:slug", "query" => [] },
     { "method" => "GET", "path" => "/v1/speakers/:year/:slug", "query" => [] },
-    { "method" => "GET", "path" => "/v1/sponsors", "query" => ["year"] },
+    { "method" => "GET", "path" => "/v1/sponsors", "query" => [ "year" ] },
     { "method" => "GET", "path" => "/v1/sponsors/:slug", "query" => [] },
     { "method" => "GET", "path" => "/v1/sponsors/:year/:slug", "query" => [] }
   ].freeze
@@ -72,26 +72,26 @@ class Catalog
     end
 
     def speaker(slug)
-      row = query("SELECT #{SPEAKER_COLS} FROM v1_speakers WHERE slug = $1", [slug]).first
+      row = query("SELECT #{SPEAKER_COLS} FROM v1_speakers WHERE slug = $1", [ slug ]).first
       return nil unless row
 
-      talks = query("SELECT #{TALK_COLS} FROM v1_talks WHERE speaker_slug = $1 ORDER BY year DESC", [slug]).map { |t| clean(t) }
-      years_for = query("SELECT DISTINCT year FROM v1_talks WHERE speaker_slug = $1 ORDER BY year DESC", [slug]).map { |r| Integer(r["year"]) }
+      talks = query("SELECT #{TALK_COLS} FROM v1_talks WHERE speaker_slug = $1 ORDER BY year DESC", [ slug ]).map { |t| clean(t) }
+      years_for = query("SELECT DISTINCT year FROM v1_talks WHERE speaker_slug = $1 ORDER BY year DESC", [ slug ]).map { |r| Integer(r["year"]) }
       clean(row).merge("talks" => talks, "years" => years_for)
     end
 
     def speaker_for_year(year, slug)
       year = Integer(year)
-      row = query("SELECT #{SPEAKER_COLS} FROM v1_speakers WHERE slug = $1", [slug]).first
+      row = query("SELECT #{SPEAKER_COLS} FROM v1_speakers WHERE slug = $1", [ slug ]).first
       return nil unless row
 
       talks = query(
         "SELECT #{TALK_COLS} FROM v1_talks WHERE speaker_slug = $1 AND year = $2 ORDER BY year DESC",
-        [slug, year]
+        [ slug, year ]
       ).map { |t| clean(t) }
       return :missing_year if talks.empty?
 
-      years_for = query("SELECT DISTINCT year FROM v1_talks WHERE speaker_slug = $1 ORDER BY year DESC", [slug]).map { |r| Integer(r["year"]) }
+      years_for = query("SELECT DISTINCT year FROM v1_talks WHERE speaker_slug = $1 ORDER BY year DESC", [ slug ]).map { |r| Integer(r["year"]) }
       clean(row).merge(
         "year" => year,
         "talks" => talks,
@@ -104,26 +104,26 @@ class Catalog
 
     def sponsors(year = nil)
       if year
-        query("SELECT #{YEAR_SPONSOR_COLS} FROM v1_year_sponsors WHERE year = $1 ORDER BY name", [Integer(year)]).map { |row| clean(row) }
+        query("SELECT #{YEAR_SPONSOR_COLS} FROM v1_year_sponsors WHERE year = $1 ORDER BY name", [ Integer(year) ]).map { |row| clean(row) }
       else
         query("SELECT #{SPONSOR_COLS} FROM v1_sponsors ORDER BY name").map { |row| clean(row) }
       end
     end
 
     def sponsor(slug)
-      row = query("SELECT #{SPONSOR_COLS} FROM v1_sponsors WHERE slug = $1", [slug]).first
+      row = query("SELECT #{SPONSOR_COLS} FROM v1_sponsors WHERE slug = $1", [ slug ]).first
       return nil unless row
 
-      sponsorships = query("SELECT * FROM v1_sponsorships WHERE sponsor_slug = $1", [slug]).map { |s| clean(s) }
+      sponsorships = query("SELECT * FROM v1_sponsorships WHERE sponsor_slug = $1", [ slug ]).map { |s| clean(s) }
       clean(row).merge("sponsorships" => sponsorships)
     end
 
     def sponsor_for_year(year, slug)
       year = Integer(year)
-      row = query("SELECT #{YEAR_SPONSOR_COLS} FROM v1_year_sponsors WHERE year = $1 AND slug = $2", [year, slug]).first
+      row = query("SELECT #{YEAR_SPONSOR_COLS} FROM v1_year_sponsors WHERE year = $1 AND slug = $2", [ year, slug ]).first
       return nil unless row
 
-      years_for = query("SELECT DISTINCT year FROM v1_sponsorships WHERE sponsor_slug = $1 ORDER BY year DESC", [slug]).map { |r| Integer(r["year"]) }
+      years_for = query("SELECT DISTINCT year FROM v1_sponsorships WHERE sponsor_slug = $1 ORDER BY year DESC", [ slug ]).map { |r| Integer(r["year"]) }
       clean(row).merge(
         "years" => years_for,
         "other_years" => years_for.reject { |y| y == year }
@@ -219,7 +219,7 @@ class Catalog
         connect_new
       rescue StandardError
         lock.synchronize do
-          @opened = [(@opened || 1) - 1, 0].max
+          @opened = [ (@opened || 1) - 1, 0 ].max
           wait.signal
         end
         raise
@@ -240,7 +240,7 @@ class Catalog
       return if connect_fn
 
       lock.synchronize do
-        @opened = [(@opened || 1) - 1, 0].max
+        @opened = [ (@opened || 1) - 1, 0 ].max
         wait.signal
       end
     end
@@ -256,7 +256,7 @@ class Catalog
         "SELECT #{SPEAKER_COLS} FROM v1_speakers " \
         "WHERE slug IN (SELECT speaker_slug FROM v1_talks WHERE year = $1) " \
         "ORDER BY last_name, first_name",
-        [year]
+        [ year ]
       )
       attach_year_tags(speakers.map { |row| clean(row) }, year)
     end
@@ -283,7 +283,7 @@ class Catalog
     end
 
     def load_talks_for_year(year)
-      query("SELECT #{TALK_COLS} FROM v1_talks WHERE year = $1 ORDER BY speaker_slug, year DESC", [year])
+      query("SELECT #{TALK_COLS} FROM v1_talks WHERE year = $1 ORDER BY speaker_slug, year DESC", [ year ])
         .map { |row| clean(row) }
         .group_by { |talk| talk["speaker_slug"] }
     end

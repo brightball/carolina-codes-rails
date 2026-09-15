@@ -1,2 +1,11 @@
 [tools]
 ruby = "4.0.6"
+gitleaks = "8.30.1"
+
+[tasks.check]
+description = "Run bin/ci (setup plus the five precommit checks)"
+run = "bin/ci"
+
+[tasks.secrets]
+description = "Scan git history for secrets with gitleaks"
+run = "gitleaks git --verbose"
