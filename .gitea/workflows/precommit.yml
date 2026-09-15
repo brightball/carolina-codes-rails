@@ -1,8 +1,17 @@
 # One Gitea Actions job per precommit check. Not a single combined job.
 #
-# act_runner starts a new container per job. Empty images: clone GITHUB_SHA
-# with the job token over HTTPS. Gitea git HTTP returns 401 without the token.
-# Do not git init or set init.defaultBranch here. Do not use actions/checkout.
+# act_runner starts a new container per job, so jobs cannot share a live
+# filesystem. Host bind-mounts are also blocked. Prepare token-clones
+# GITHUB_SHA (full history so gitleaks git can scan), installs the shared
+# packages (OS toolchain, gems, gitleaks 8.30.1), and uploads a workspace
+# tarball including .git. Check jobs restore that artifact and run only
+# their check. ruby:4.0 has no Node, so those jobs apt-get nodejs only to
+# run the artifact action — they do not clone, bundle install, or reinstall
+# build-essential. Compiled pg still needs libpq at runtime after restore.
+#
+# Empty runner image: clone GITHUB_SHA with the job token over HTTPS.
+# Gitea git HTTP returns 401 without the token. Do not git init or set
+# init.defaultBranch here. Do not use actions/checkout.
 name: precommit
 
 "on":
@@ -18,9 +27,10 @@ env:
   GITHUB_TOKEN: ${{ github.token }}
   BUNDLE_JOBS: "4"
   BUNDLE_RETRY: "3"
+  BUNDLE_PATH: vendor/bundle
 
 jobs:
-  test:
+  prepare:
     runs-on: ubuntu-latest
     container:
       image: docker.io/library/ruby:4.0
@@ -28,69 +38,9 @@ jobs:
         GITHUB_TOKEN: ${{ github.token }}
         RAILS_ENV: test
     steps:
-      - run: apt-get update -qq && apt-get install -y --no-install-recommends git ca-certificates libpq-dev build-essential
-      - run: |
-          git config --global --add safe.directory '*'
-          token="${GITHUB_TOKEN:-${GITEA_TOKEN:-}}"
-          if [ -z "$token" ]; then echo "missing job token for git fetch" >&2; exit 1; fi
-          host="${GITHUB_SERVER_URL#https://}"
-          host="${host#http://}"
-          git clone --depth 1 --no-checkout "https://x-access-token:${token}@${host}/${GITHUB_REPOSITORY}" .
-          git fetch --depth 1 origin "${GITHUB_SHA}"
-          git checkout --force FETCH_HEAD
-      - run: bundle install
-      - run: bin/rails test
-
-  sast:
-    runs-on: ubuntu-latest
-    container:
-      image: docker.io/library/ruby:4.0
-      env:
-        GITHUB_TOKEN: ${{ github.token }}
-        RAILS_ENV: test
-    steps:
-      - run: apt-get update -qq && apt-get install -y --no-install-recommends git ca-certificates libpq-dev build-essential
-      - run: |
-          git config --global --add safe.directory '*'
-          token="${GITHUB_TOKEN:-${GITEA_TOKEN:-}}"
-          if [ -z "$token" ]; then echo "missing job token for git fetch" >&2; exit 1; fi
-          host="${GITHUB_SERVER_URL#https://}"
-          host="${host#http://}"
-          git clone --depth 1 --no-checkout "https://x-access-token:${token}@${host}/${GITHUB_REPOSITORY}" .
-          git fetch --depth 1 origin "${GITHUB_SHA}"
-          git checkout --force FETCH_HEAD
-      - run: bundle install
-      - run: bin/brakeman --quiet --no-pager --exit-on-warn --exit-on-error
-
-  audit:
-    runs-on: ubuntu-latest
-    container:
-      image: docker.io/library/ruby:4.0
-      env:
-        GITHUB_TOKEN: ${{ github.token }}
-        RAILS_ENV: test
-    steps:
-      - run: apt-get update -qq && apt-get install -y --no-install-recommends git ca-certificates libpq-dev build-essential
-      - run: |
-          git config --global --add safe.directory '*'
-          token="${GITHUB_TOKEN:-${GITEA_TOKEN:-}}"
-          if [ -z "$token" ]; then echo "missing job token for git fetch" >&2; exit 1; fi
-          host="${GITHUB_SERVER_URL#https://}"
-          host="${host#http://}"
-          git clone --depth 1 --no-checkout "https://x-access-token:${token}@${host}/${GITHUB_REPOSITORY}" .
-          git fetch --depth 1 origin "${GITHUB_SHA}"
-          git checkout --force FETCH_HEAD
-      - run: bundle install
-      - run: bin/bundler-audit
-
-  gitleaks:
-    runs-on: ubuntu-latest
-    container:
-      image: docker.io/library/ruby:4.0
-      env:
-        GITHUB_TOKEN: ${{ github.token }}
-    steps:
-      - run: apt-get update -qq && apt-get install -y --no-install-recommends git ca-certificates curl
+      # libpq-dev + build-essential: compile the pg gem.
+      # nodejs: actions/upload-artifact@v3.
+      - run: apt-get update -qq && apt-get install -y --no-install-recommends git ca-certificates libpq-dev build-essential nodejs curl tar
       - run: |
           git config --global --add safe.directory '*'
           token="${GITHUB_TOKEN:-${GITEA_TOKEN:-}}"
@@ -101,29 +51,112 @@ jobs:
           git fetch origin "${GITHUB_SHA}"
           git checkout --force FETCH_HEAD
       - run: |
-          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz" \
-            | tar -xz -C /usr/local/bin gitleaks
-          chmod +x /usr/local/bin/gitleaks
-          gitleaks version
-      - run: gitleaks git --verbose
+          bundle config set --local path vendor/bundle
+          bundle install
+      - run: |
+          mkdir -p .ci/bin
+          curl -fsSL -o /tmp/gitleaks.tgz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          tar -xzf /tmp/gitleaks.tgz -C .ci/bin gitleaks
+          chmod +x .ci/bin/gitleaks
+          .ci/bin/gitleaks version
+      - run: |
+          tar -czf /tmp/prep-workspace.tar.gz .
+          mv /tmp/prep-workspace.tar.gz prep-workspace.tar.gz
+      - uses: actions/upload-artifact@v3
+        with:
+          name: prep-workspace
+          path: prep-workspace.tar.gz
+          if-no-files-found: error
+          retention-days: 1
 
-  style:
+  test:
+    needs: prepare
     runs-on: ubuntu-latest
     container:
       image: docker.io/library/ruby:4.0
       env:
-        GITHUB_TOKEN: ${{ github.token }}
         RAILS_ENV: test
     steps:
-      - run: apt-get update -qq && apt-get install -y --no-install-recommends git ca-certificates libpq-dev build-essential
+      - run: apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates nodejs libpq5
+      - uses: actions/download-artifact@v3
+        with:
+          name: prep-workspace
+      - run: |
+          archive="$(find . -name prep-workspace.tar.gz -print | head -1)"
+          test -n "$archive"
+          tar -xzf "$archive"
+      - run: bin/rails test
+
+  sast:
+    needs: prepare
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/library/ruby:4.0
+      env:
+        RAILS_ENV: test
+    steps:
+      - run: apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates nodejs libpq5
+      - uses: actions/download-artifact@v3
+        with:
+          name: prep-workspace
+      - run: |
+          archive="$(find . -name prep-workspace.tar.gz -print | head -1)"
+          test -n "$archive"
+          tar -xzf "$archive"
+      - run: bin/brakeman --quiet --no-pager --exit-on-warn --exit-on-error
+
+  audit:
+    needs: prepare
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/library/ruby:4.0
+      env:
+        RAILS_ENV: test
+    steps:
+      - run: apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates nodejs libpq5
+      - uses: actions/download-artifact@v3
+        with:
+          name: prep-workspace
+      - run: |
+          archive="$(find . -name prep-workspace.tar.gz -print | head -1)"
+          test -n "$archive"
+          tar -xzf "$archive"
+      - run: bin/bundler-audit
+
+  gitleaks:
+    needs: prepare
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/library/ruby:4.0
+    steps:
+      - run: apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates nodejs git
+      - uses: actions/download-artifact@v3
+        with:
+          name: prep-workspace
+      - run: |
+          archive="$(find . -name prep-workspace.tar.gz -print | head -1)"
+          test -n "$archive"
+          tar -xzf "$archive"
       - run: |
           git config --global --add safe.directory '*'
-          token="${GITHUB_TOKEN:-${GITEA_TOKEN:-}}"
-          if [ -z "$token" ]; then echo "missing job token for git fetch" >&2; exit 1; fi
-          host="${GITHUB_SERVER_URL#https://}"
-          host="${host#http://}"
-          git clone --depth 1 --no-checkout "https://x-access-token:${token}@${host}/${GITHUB_REPOSITORY}" .
-          git fetch --depth 1 origin "${GITHUB_SHA}"
-          git checkout --force FETCH_HEAD
-      - run: bundle install
+          export PATH="${PWD}/.ci/bin:${PATH}"
+          gitleaks git --verbose
+
+  style:
+    needs: prepare
+    runs-on: ubuntu-latest
+    container:
+      image: docker.io/library/ruby:4.0
+      env:
+        RAILS_ENV: test
+    steps:
+      - run: apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates nodejs libpq5
+      - uses: actions/download-artifact@v3
+        with:
+          name: prep-workspace
+      - run: |
+          archive="$(find . -name prep-workspace.tar.gz -print | head -1)"
+          test -n "$archive"
+          tar -xzf "$archive"
       - run: bin/rubocop

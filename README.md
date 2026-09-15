@@ -30,4 +30,4 @@ bin/ci                       # setup + the five checks
 mise run secrets             # gitleaks git --verbose
 ```
 
-Emergency skip: `SKIP=rails-test,brakeman,bundler-audit,gitleaks,rubocop git commit`. Gitea runs one parallel job per check in `.gitea/workflows/precommit.yml`.
+Emergency skip: `SKIP=rails-test,brakeman,bundler-audit,gitleaks,rubocop git commit`. Gitea prepares the workspace once, then runs one job per check in `.gitea/workflows/precommit.yml`.
