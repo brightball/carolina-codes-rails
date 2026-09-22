@@ -120,6 +120,13 @@ class CiWiringTest < ActiveSupport::TestCase
       "gitleaks job must invoke gitleaks by name with git --verbose")
   end
 
+  test "gitea test job sets CI so eager load is on" do
+    workflow = YAML.safe_load(File.read(WORKFLOW_PATH), permitted_classes: [], aliases: true)
+    value = workflow.dig("jobs", "test", "container", "env", "CI")
+    assert value.present?, "test job container env must set CI"
+    refute_equal "false", value.to_s.downcase
+  end
+
   private
 
   def job_run_scripts(job)

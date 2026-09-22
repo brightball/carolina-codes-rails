@@ -37,6 +37,16 @@ class Catalog
     "youtube_url, instagram_url, facebook_url"
   TALK_COLS =
     "slug, title, description, format, youtube_id, year, speaker_slug, languages, topics"
+  # Year row and every sponsorship year in one round-trip. Columns are qualified
+  # because the join also exposes year.
+  YEAR_SPONSOR_SELECT = YEAR_SPONSOR_COLS.split(", ").map { |column| "ys.#{column}" }.join(", ")
+  YEAR_SCOPED_SPONSOR_SQL =
+    "SELECT #{YEAR_SPONSOR_SELECT}, sp.year AS sponsorship_year " \
+    "FROM v1_year_sponsors ys " \
+    "LEFT JOIN (SELECT DISTINCT sponsor_slug, year FROM v1_sponsorships) sp " \
+    "ON sp.sponsor_slug = ys.slug " \
+    "WHERE ys.year = $1 AND ys.slug = $2 " \
+    "ORDER BY sp.year DESC"
 
   class << self
     attr_accessor :query_fn, :connect_fn
@@ -45,6 +55,20 @@ class Catalog
     def reset_counts!
       @sql_count = 0
       @connect_count = 0
+    end
+
+    # Drops idle connections so a stand-in factory cannot leak into later work.
+    def reset_pool!
+      lock.synchronize do
+        loop do
+          conn = idle.pop
+          break unless conn
+
+          conn.close rescue nil
+        end
+        @opened = 0
+        wait.broadcast
+      end
     end
 
     def identity
@@ -75,9 +99,8 @@ class Catalog
       row = query("SELECT #{SPEAKER_COLS} FROM v1_speakers WHERE slug = $1", [ slug ]).first
       return nil unless row
 
-      talks = query("SELECT #{TALK_COLS} FROM v1_talks WHERE speaker_slug = $1 ORDER BY year DESC", [ slug ]).map { |t| clean(t) }
-      years_for = query("SELECT DISTINCT year FROM v1_talks WHERE speaker_slug = $1 ORDER BY year DESC", [ slug ]).map { |r| Integer(r["year"]) }
-      clean(row).merge("talks" => talks, "years" => years_for)
+      talks = talks_for_slug(slug)
+      clean(row).merge("talks" => talks, "years" => years_from_talks(talks))
     end
 
     def speaker_for_year(year, slug)
@@ -85,20 +108,18 @@ class Catalog
       row = query("SELECT #{SPEAKER_COLS} FROM v1_speakers WHERE slug = $1", [ slug ]).first
       return nil unless row
 
-      talks = query(
-        "SELECT #{TALK_COLS} FROM v1_talks WHERE speaker_slug = $1 AND year = $2 ORDER BY year DESC",
-        [ slug, year ]
-      ).map { |t| clean(t) }
-      return :missing_year if talks.empty?
+      talks = talks_for_slug(slug)
+      talks_for_year = talks.select { |talk| talk["year"] == year }
+      return :missing_year if talks_for_year.empty?
 
-      years_for = query("SELECT DISTINCT year FROM v1_talks WHERE speaker_slug = $1 ORDER BY year DESC", [ slug ]).map { |r| Integer(r["year"]) }
+      years_for = years_from_talks(talks)
       clean(row).merge(
         "year" => year,
-        "talks" => talks,
+        "talks" => talks_for_year,
         "years" => years_for,
         "other_years" => years_for.reject { |y| y == year },
-        "languages" => unique_tags(talks, "languages"),
-        "topics" => unique_tags(talks, "topics")
+        "languages" => unique_tags(talks_for_year, "languages"),
+        "topics" => unique_tags(talks_for_year, "topics")
       )
     end
 
@@ -120,13 +141,18 @@ class Catalog
 
     def sponsor_for_year(year, slug)
       year = Integer(year)
-      row = query("SELECT #{YEAR_SPONSOR_COLS} FROM v1_year_sponsors WHERE year = $1 AND slug = $2", [ year, slug ]).first
-      return nil unless row
+      rows = query(YEAR_SCOPED_SPONSOR_SQL, [ year, slug ])
+      return nil if rows.empty?
 
-      years_for = query("SELECT DISTINCT year FROM v1_sponsorships WHERE sponsor_slug = $1 ORDER BY year DESC", [ slug ]).map { |r| Integer(r["year"]) }
-      clean(row).merge(
+      years_for = rows.filter_map { |row|
+        value = row["sponsorship_year"]
+        Integer(value) if value
+      }.uniq.sort.reverse
+      body = clean(rows.first)
+      body.delete("sponsorship_year")
+      body.merge(
         "years" => years_for,
-        "other_years" => years_for.reject { |y| y == year }
+        "other_years" => years_for.reject { |value| value == year }
       )
     end
 
@@ -152,6 +178,12 @@ class Catalog
       http.request(req)
     rescue StandardError => e
       warn "register: #{e.message}"
+    end
+
+    # Returns immediately. The POST keeps its open/read timeouts on this thread
+    # so a peer that accepts and never responds cannot hold the listener.
+    def register_in_background
+      Thread.new { register_with_elixir }
     end
 
     def query(sql, params = [])
@@ -196,12 +228,6 @@ class Catalog
     end
 
     def checkout
-      if connect_fn
-        lock.synchronize { @connect_count = (@connect_count || 0) + 1 }
-        return connect_fn.call
-      end
-
-      created = false
       lock.synchronize do
         loop do
           return idle.pop unless idle.empty?
@@ -209,7 +235,6 @@ class Catalog
           if @opened < pool_size
             @opened += 1
             @connect_count = (@connect_count || 0) + 1
-            created = true
             break
           end
           wait.wait(lock)
@@ -227,8 +252,6 @@ class Catalog
     end
 
     def checkin(conn)
-      return if connect_fn
-
       lock.synchronize do
         idle << conn
         wait.signal
@@ -237,8 +260,6 @@ class Catalog
 
     def discard(conn)
       conn.close rescue nil
-      return if connect_fn
-
       lock.synchronize do
         @opened = [ (@opened || 1) - 1, 0 ].max
         wait.signal
@@ -246,9 +267,22 @@ class Catalog
     end
 
     def connect_new
+      return connect_fn.call if connect_fn
+
       url = ENV.fetch("DATABASE_URL", "postgres://postgres:postgres@127.0.0.1:5432/carolina_dev")
       url += (url.include?("?") ? "&" : "?") + "sslmode=disable" unless url.include?("sslmode=")
       PG.connect(url)
+    end
+
+    def talks_for_slug(slug)
+      query(
+        "SELECT #{TALK_COLS} FROM v1_talks WHERE speaker_slug = $1 ORDER BY year DESC",
+        [ slug ]
+      ).map { |talk| clean(talk) }
+    end
+
+    def years_from_talks(talks)
+      talks.filter_map { |talk| talk["year"] }.uniq
     end
 
     def year_speakers(year)

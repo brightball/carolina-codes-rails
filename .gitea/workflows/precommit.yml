@@ -77,6 +77,7 @@ jobs:
       image: docker.io/library/ruby:4.0
       env:
         RAILS_ENV: test
+        CI: "true"
     steps:
       - run: apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates nodejs libpq5
       - uses: actions/download-artifact@v3

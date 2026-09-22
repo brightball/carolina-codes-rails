@@ -9,6 +9,7 @@ primary_region = "iad"
 [env]
   PORT = "8080"
   RAILS_ENV = "production"
+  RUBY_YJIT_ENABLE = "1"
   CAROLINA_URL = "http://carolina-codes.internal:8080"
   PUBLIC_BASE_URL = "https://carolina-codes-rails.fly.dev"
 
