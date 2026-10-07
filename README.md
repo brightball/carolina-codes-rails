@@ -1,6 +1,8 @@
 # carolina-codes-rails
 
-Read-only v1 polyglot API for Carolina Code Conference. **Ruby 4.0.6** + **Rails 8.1.3.1** (API-only, Puma). Distinct from `../ruby` (Sinatra on :4001).
+Read-only v1 polyglot API for Carolina Code Conference. **Ruby 4.0.6** (`.ruby-version`) and **Rails 8.1.3.1** (`Gemfile.lock`), API-only, on Puma. Distinct from `../ruby` (Sinatra on :4001).
+
+Boot caches work with **bootsnap** (`config/boot.rb`, and `bootsnap precompile` in the image build). Production enables **YJIT** (`RUBY_YJIT_ENABLE` on the runtime image and in `config/boot.rb`). The runtime image ships without a C toolchain.
 
 Queries PostgreSQL `v1_*` views. Registers with Elixir once on boot.
 
