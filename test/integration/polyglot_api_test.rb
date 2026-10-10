@@ -289,7 +289,7 @@ class PolyglotApiTest < ActionDispatch::IntegrationTest
     fly = File.read(Rails.root.join("fly.toml"))
     assert_match(/internal_port\s*=\s*8080/, fly)
     assert_match(%r{path\s*=\s*"/health"}, fly)
-    assert_match(/auto_stop_machines\s*=\s*"stop"/, fly)
+    assert_match(/auto_stop_machines\s*=\s*"suspend"/, fly)
     assert_match(/auto_start_machines\s*=\s*true/, fly)
     assert_match(/min_machines_running\s*=\s*0/, fly)
     assert_match(/RUBY_YJIT_ENABLE\s*=\s*"1"/, fly)
